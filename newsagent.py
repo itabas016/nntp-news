@@ -8,6 +8,8 @@ from email import message_from_string
 from urllib.request import urlopen
 import textwrap
 import re
+import json
+import datetime, io
 
 day = 24 * 60 * 60 # Number of seconds in one day
 
@@ -66,10 +68,11 @@ class NNTPSource:
         start = localtime(time() - self.window*day)
         date = strftime('%y%m%d', start)
         hour = strftime('%H%M%S', start)
+        full_date = date + time
 
         server = NNTP(self.servername)
 
-        ids = server.newnews(self.group, date, hour)[1]
+        ids = server.newnews(self.group, datetime.datetime.strptime(full_date, '%y%m%d%H%M%S'))[1]
 
         for id in ids:
             lines = server.article(id)[3]
@@ -100,6 +103,50 @@ class SimpleWebSource:
         bodies = self.bodyPattern.findall(text)
         for title, body in zip(titles, bodies):
             yield NewsItem(title, wrap(body))
+
+class APIJsonSoucre:
+    """
+    API response base on json
+    """
+    def __init__(self, url):
+        self.url = url
+    
+    def getItems(self):
+        content = urlopen(self.url).read().decode('utf-8')
+        data = json.loads(content)
+        status = data['status']
+        if status == 'ok':
+            articles = data['articles']
+            titles = []
+            bodies = []
+            if len(articles) > 0:
+                for article in articles:
+                    title = article['title']
+                    url = article['url']
+                    publish = article['publishedAt']
+                    description = article['description']
+                    titles.append(title)
+                    bodies.append("""
+                        <ul style="list-style: none;">
+                            <li>Description: %s</li>\n
+                            <li>Origin URL: <a href="%s">%s</a></li>\n
+                            <li>Published At: %s</li>
+                        </ul>
+                    """ % (description, url, url, publish))
+                for title, body in list(zip(titles, bodies)):
+                    yield NewsItem(title, wrap(body))
+
+class StringBuilder:
+    _file_str = None
+
+    def __init__(self):
+         self._file_str = io.StringIO()
+
+    def Append(self, str):
+         self._file_str.write(str)
+
+    def __str__(self):
+         return self._file_str.getvalue()
 
 class PlainDestination:
     """
@@ -151,33 +198,77 @@ class HTMLDestination:
         </html>
         """)
 
+class HTMLDestination2():
+    def __init__(self, filename):
+        self.filename = filename
+
+    def receiveItems(self, items):
+        
+        content = StringBuilder()
+
+        first_part = """
+<html>
+    <head>
+        <title>Top of BBC's News</title>
+    </head>
+    <body>
+        <h1>Top of BBC's News</h1>"""
+        content.Append(first_part)
+        content.Append("""
+        <ul>""")
+
+        for item in items:
+            content.Append('<li><b>%s</b>\n%s</li>\n' % (item.title, item.body))
+        
+        content.Append("""
+        </ul>""")
+
+        last_part = """
+    </body>
+</html>"""
+        content.Append(last_part)
+        with open(self.filename, 'w', encoding='utf-8') as f:
+            f.write(content.__str__())
+
 def runDefaultSetup():
     """
     A default setup of sources and destination. Modify to taste.
     """
     agent = NewsAgent()
 
+    # # A SimpleWebSource that retrieves news from the
+    # # BBC news site:
+    # bbc_url = 'http://news.bbc.co.uk/text_only.stm'
+    # bbc_title = r'(?s)a href="[^"]*">\s*<b>\s*(.*?)\s*</b>'
+    # bbc_body = r'(?s)</a>\s*<br />\s*(.*?)\s*<'
+    # bbc = SimpleWebSource(bbc_url, bbc_title, bbc_body)
 
-    # A SimpleWebSource that retrieves news from the
-    # BBC news site:
-    bbc_url = 'http://news.bbc.co.uk/text_only.stm'
-    bbc_title = r'(?s)a href="[^"]*">\s*<b>\s*(.*?)\s*</b>'
-    bbc_body = r'(?s)</a>\s*<br />\s*(.*?)\s*<'
-    bbc = SimpleWebSource(bbc_url, bbc_title, bbc_body)
+    # agent.addSource(bbc)
 
-    agent.addSource(bbc)
+    # # How to realize a nntp source, please goto sample
+    # # An NNTPSource that retrieves news from comp.lang.python.announce:
+    # clpa_server = 'news.foo.bar' # Insert real server name
+    # clpa_group = 'comp.lang.python.announce'
+    # clpa_window = 1
+    # clpa = NNTPSource(clpa_server, clpa_group, clpa_window)
 
-    # An NNTPSource that retrieves news from comp.lang.python.announce:
-    clpa_server = 'news.foo.bar' # Insert real server name
-    clpa_group = 'comp.lang.python.announce'
-    clpa_window = 1
-    clpa = NNTPSource(clpa_server, clpa_group, clpa_window)
+    # agent.addSource(clpa)
 
-    agent.addSource(clpa)
+    ###
+    # Above all source is invalid, currently use news API and
+    # JSON format to resolve this. 
 
-    # Add plain text destination and an HTML destination:
-    agent.addDestination(PlainDestination())
-    agent.addDestination(HTMLDestination('news.html'))
+    # BBC News API:
+    # bbc_news_url = 'https://newsapi.org/v1/articles?source=bbc-news&sortBy=top&apiKey={your-api-key}'
+    bbc_news = APIJsonSoucre(bbc_news_url)
+    
+    agent.addSource(bbc_news)
+
+    # # Add plain text destination and an HTML destination:
+    # agent.addDestination(PlainDestination())
+    # agent.addDestination(HTMLDestination('news.html'))
+
+    agent.addDestination(HTMLDestination2('news.html'))
 
     # Distribute the news items:
     agent.distribute()
